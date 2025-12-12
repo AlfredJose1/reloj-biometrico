@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Reloj Biométrico Futurista — v4</title>
+<style>
+  :root{ --aqua:#00b7d9; --bg:#ffffff; --card:#f7f9fb; --text:#0a0a0a }
+  body{
+    font-family: Inter, system-ui, Arial;
+    margin:0; background:var(--bg); color:var(--text);
+    -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+  }
+  h1,h2{ text-align:center; color:var(--text); }
+  .container{ max-width:980px; margin:24px auto; padding:16px; }
+  .grid{ display:grid; grid-template-columns:1fr 300px; gap:18px; align-items:start; }
+  .card{ background:var(--card); border-radius:18px; padding:18px; box-shadow:0 6px 20px rgba(0,183,217,0.08); border:1px solid #e6f4f8 }
+  .clock{ font-size:36px; text-align:center; color:var(--aqua); font-weight:700; margin-bottom:8px }
+  label{ display:block; font-weight:600; margin-bottom:6px }
+  input, select{ width:100%; padding:12px; border-radius:12px; border:1px solid #d8ecf7; background:#fff; font-size:15px }
+  button{ width:100%; padding:12px; border-radius:14px; background:var(--aqua); color:white; border:none; font-weight:700; cursor:pointer }
+  button.ghost{ background:#fff; color:var(--aqua); border:2px solid var(--aqua) }
+  table{ width:100%; border-collapse:collapse; margin-top:12px }
+  th,td{ padding:10px; text-align:center; border-bottom:1px solid #eef9fc }
+  th{ background:var(--aqua); color:white }
+  .small{ font-size:13px; color:#666 }
+  @media(max-width:880px){ .grid{ grid-template-columns:1fr; } }
+</style>
+  <link rel="manifest" href="manifest.json" />
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js');
+    }
+  </script>
+</head>
+<body>
+  <div class="container">
+    <h1>Reloj Biométrico Futurista</h1>
+    <div class="grid">
+      <!-- LEFT: Reloj y registro -->
+      <div>
+        <div class="card">
+          <div class="clock" id="clock">--:--:--</div>
+
+          <label for="empleadoSelect">Empleado (selecciona o agrega)</label>
+          <select id="empleadoSelect"><option value="">-- No hay empleados --</option></select>
+
+          <label for="categoria">Categoría</label>
+          <select id="categoria"><option value="mañana">Mañana</option><option value="noche">Noche</option></select>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px">
+            <button id="btnMarcar">Marcar Entrada / Salida</button>
+            <button id="btnVerDashboard" class="ghost" onclick="showDashboard()">Ver Dashboard</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <h2 style="font-size:18px; margin:0 0 10px 0">Agregar nuevo empleado</h2>
+          <label>Nombre</label>
+          <input id="nuevoNombre" placeholder="Ej: Juan Pérez">
+          <label>Sueldo mensual (RD$)</label>
+          <input id="nuevoSueldo" type="number" placeholder="Ej: 20000">
+          <label>Turno</label>
+          <select id="nuevoTipo"><option value="mañana">Mañana</option><option value="noche">Noche</option></select>
+          <div style="display:flex; gap:10px; margin-top:12px">
+            <button onclick="agregarEmpleado()">Agregar</button>
+            <button class="ghost" onclick="limpiarEmpleados()">Eliminar todos</button>
+          </div>
+          <p class="small">Al agregar un empleado se asigna su sueldo y quedará disponible para marcar. Los registros se guardan por 31 días automáticamente.</p>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <h2 style="font-size:16px; margin:0 0 8px 0">Registros recientes</h2>
+          <table>
+            <thead><tr><th>Empleado</th><th>Entrada</th><th>Salida</th><th>Ganado</th></tr></thead>
+            <tbody id="tabla"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- RIGHT: Dashboard -->
+      <div>
+        <div class="card" id="dashboardCard" style="display:none">
+          <h2 style="font-size:18px; color:var(--aqua); margin:0 0 12px 0">Dashboard del Empleado</h2>
+
+          <label>Seleccionar empleado</label>
+          <select id="dashEmpleado"></select>
+
+          <div style="display:flex; gap:10px; margin-top:10px">
+            <button onclick="cargarDashboard()">Cargar</button>
+            <button class="ghost" onclick="exportCSV()">Exportar CSV</button>
+            <button class="ghost" onclick="exportChartPNG()">Exportar PNG</button>
+          </div>
+
+          <canvas id="hourChart" height="120" style="margin-top:14px; max-height:150px"></canvas>
+
+          <table style="margin-top:12px">
+            <thead><tr><th>Fecha</th><th>Horas</th><th>Ganado</th></tr></thead>
+            <tbody id="dashTabla"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  // --- STORAGE KEYS ---
+  const KEY_EMPLEADOS = 'empleados_v4';
+  const KEY_REGISTROS = 'registros_v4';
+  const KEY_LAST_CLEAN = 'lastClean_v4';
+
+  // --- STATE ---
+  let empleados = JSON.parse(localStorage.getItem(KEY_EMPLEADOS)) || [];
+  let registros = JSON.parse(localStorage.getItem(KEY_REGISTROS)) || [];
+
+  // --- Helpers ---
+  function saveState(){
+    localStorage.setItem(KEY_EMPLEADOS, JSON.stringify(empleados));
+    localStorage.setItem(KEY_REGISTROS, JSON.stringify(registros));
+  }
+
+  function nowISO(){ return new Date().toISOString(); }
+  function toLocalTime(iso){ return iso ? new Date(iso).toLocaleTimeString() : '---'; }
+  function toLocalDate(iso){ return iso ? new Date(iso).toLocaleDateString() : '---'; }
+
+  function calcularHoras(entradaISO, salidaISO){
+    if(!entradaISO || !salidaISO) return 0;
+    const e = new Date(entradaISO);
+    const s = new Date(salidaISO);
+    const diff = (s - e) / 1000 / 3600; // horas
+    return diff > 0 ? diff : 0;
+  }
+
+  // --- Auto clean: removes registros older than 31 days (keeps others) ---
+  function autoClean(){
+    const last = parseInt(localStorage.getItem(KEY_LAST_CLEAN) || '0', 10);
+    const now = Date.now();
+    const MS_31 = 31 * 24 * 60 * 60 * 1000;
+    if(!last || (now - last) > MS_31){
+      const cutoff = now - MS_31;
+      registros = registros.filter(r => {
+        // each registro has an 'entradaISO' (required)
+        const ts = new Date(r.entradaISO).getTime();
+        return ts >= cutoff;
+      });
+      localStorage.setItem(KEY_LAST_CLEAN, String(now));
+      saveState();
+    }
+  }
+
+  // --- UI updaters ---
+  function actualizarSelects(){
+    const sel = document.getElementById('empleadoSelect');
+    const dash = document.getElementById('dashEmpleado');
+
+    sel.innerHTML = '';
+    dash.innerHTML = '';
+
+    if(empleados.length === 0){
+      sel.innerHTML = '<option value="">-- No hay empleados --</option>';
+      dash.innerHTML = '<option value="">-- No hay empleados --</option>';
+      return;
+    }
+
+    empleados.forEach((e, i) => {
+      const txt = `${e.nombre} (${e.categoria})`;
+      sel.innerHTML += `<option value="${i}">${txt}</option>`;
+      dash.innerHTML += `<option value="${i}">${e.nombre}</option>`;
+    });
+  }
+
+  function mostrarTabla(){
+    const tbody = document.getElementById('tabla');
+    tbody.innerHTML = '';
+    // show last 20 registros
+    const recent = registros.slice().reverse().slice(0,20);
+    recent.forEach(r => {
+      const emp = r.nombre;
+      const entrada = toLocalTime(r.entradaISO);
+      const salida = r.salidaISO ? toLocalTime(r.salidaISO) : '---';
+      const horas = calcularHoras(r.entradaISO, r.salidaISO).toFixed(2);
+      const empleadoObj = empleados.find(x => x.nombre === r.nombre) || {sueldo:0};
+      const pagoHora = empleadoObj.sueldo ? (empleadoObj.sueldo / (8 * 30)) : 0;
+      const ganado = (pagoHora * parseFloat(horas)).toFixed(2);
+      tbody.innerHTML += `<tr><td>${emp}</td><td>${entrada}</td><td>${salida}</td><td>RD$ ${ganado}</td></tr>`;
+    });
+  }
+
+  // --- Add / Remove employees ---
+  function agregarEmpleado(){
+    const nombre = document.getElementById('nuevoNombre').value.trim();
+    const sueldo = parseFloat(document.getElementById('nuevoSueldo').value);
+    const categoria = document.getElementById('nuevoTipo').value;
+    if(!nombre) return alert('Escribe el nombre del empleado');
+    if(!sueldo || sueldo <= 0) return alert('Escribe un sueldo válido');
+
+    empleados.push({ nombre, sueldo, categoria });
+    saveState();
+    actualizarSelects();
+    document.getElementById('nuevoNombre').value = '';
+    document.getElementById('nuevoSueldo').value = '';
+    alert('Empleado agregado');
+  }
+
+  function limpiarEmpleados(){
+    if(!confirm('Eliminar todos los empleados y registros?')) return;
+    empleados = []; registros = [];
+    saveState(); actualizarSelects(); mostrarTabla();
+  }
+
+  // --- Marcar entrada/salida ---
+  function marcar(){
+    // guard safety: ensure empleados exist
+    if(empleados.length === 0){ alert('No hay empleados. Agrega al menos uno.'); return; }
+
+    const sel = document.getElementById('empleadoSelect');
+    const idx = sel.value;
+    if(idx === ''){ alert('Selecciona un empleado antes de marcar'); return; }
+    const empleado = empleados[parseInt(idx,10)];
+    if(!empleado){ alert('Empleado inválido'); return; }
+
+    // check last registro
+    const ultimos = registros.filter(r => r.nombre === empleado.nombre);
+    const ultimo = ultimos.length ? ultimos[ultimos.length - 1] : null;
+
+    if(!ultimo || ultimo.salidaISO){
+      // nueva entrada
+      registros.push({ nombre: empleado.nombre, categoria: empleado.categoria, entradaISO: nowISO(), salidaISO: null });
+    } else {
+      // cerrar salida
+      ultimo.salidaISO = nowISO();
+      // calcular y guardar ganado
+      const horas = calcularHoras(ultimo.entradaISO, ultimo.salidaISO);
+      const pagoHora = empleado.sueldo / (8 * 30);
+      ultimo.ganado = parseFloat((horas * pagoHora).toFixed(2));
+    }
+
+    saveState(); mostrarTabla(); actualizarSelects();
+  }
+
+  document.getElementById('btnMarcar').addEventListener('click', marcar);
+
+  // --- Dashboard ---
+  let chart = null;
+  function showDashboard(){
+    document.getElementById('dashboardCard').style.display = 'block';
+    actualizarSelects();
+  }
+
+  function cargarDashboard(){
+    const sel = document.getElementById('dashEmpleado');
+    const idx = sel.value;
+    if(idx === ''){ alert('Selecciona un empleado'); return; }
+    const empleado = empleados[parseInt(idx,10)];
+    if(!empleado) return;
+
+    // filtro registros de este empleado dentro de 31 días
+    const now = Date.now(); const cutoff = now - (31*24*60*60*1000);
+    const filtro = registros.filter(r => r.nombre === empleado.nombre && new Date(r.entradaISO).getTime() >= cutoff);
+
+    // agrupar por fecha
+    const dias = {};
+    filtro.forEach(r => {
+      const fecha = toLocalDate(r.entradaISO);
+      const horas = calcularHoras(r.entradaISO, r.salidaISO);
+      dias[fecha] = (dias[fecha] || 0) + horas;
+    });
+
+    // tabla
+    const tbody = document.getElementById('dashTabla'); tbody.innerHTML = '';
+    const labels = Object.keys(dias).sort((a,b)=> new Date(a) - new Date(b));
+    const data = labels.map(d => Number(dias[d].toFixed(2)));
+
+    labels.forEach((d,i)=>{
+      const pagoHora = empleado.sueldo / (8 * 30);
+      const ganado = (data[i] * pagoHora).toFixed(2);
+      tbody.innerHTML += `<tr><td>${d}</td><td>${data[i].toFixed(2)} hrs</td><td>RD$ ${ganado}</td></tr>`;
+    });
+
+    // chart
+    const ctx = document.getElementById('hourChart').getContext('2d');
+    if(chart) chart.destroy();
+    chart = new Chart(ctx, { type:'bar', data:{ labels:labels, datasets:[{ label:'Horas', data:data }]}, options:{ responsive:true, maintainAspectRatio:true, aspectRatio:3, scales:{ y:{ beginAtZero:true, max:8 }}} });(ctx, { type:'bar', data:{ labels:labels, datasets:[{ label:'Horas', data:data }]}, options:{ responsive:true, maintainAspectRatio:false } });
+  }
+
+  // --- Export CSV of dashboard ---
+  function exportCSV(){
+    const sel = document.getElementById('dashEmpleado');
+    const idx = sel.value; if(idx==='') { alert('Selecciona un empleado'); return; }
+    const empleado = empleados[parseInt(idx,10)];
+    const now = Date.now(); const cutoff = now - (31*24*60*60*1000);
+    const filtro = registros.filter(r => r.nombre === empleado.nombre && new Date(r.entradaISO).getTime() >= cutoff);
+    let csv = 'fecha,entrada,salida,horas,ganado\n';
+    filtro.forEach(r=>{
+      const fecha = toLocalDate(r.entradaISO);
+      const entrada = toLocalTime(r.entradaISO);
+      const salida = r.salidaISO ? toLocalTime(r.salidaISO) : '';
+      const horas = calcularHoras(r.entradaISO, r.salidaISO).toFixed(2);
+      const pagoHora = empleado.sueldo / (8 * 30);
+      const ganado = (pagoHora * Number(horas)).toFixed(2);
+      csv += `${fecha},${entrada},${salida},${horas},${ganado}\n`;
+    });
+    const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${empleado.nombre.replace(/\s+/g,'_')}_dashboard.csv`; a.click();
+  }
+
+  // --- Export chart PNG ---
+  function exportChartPNG(){
+    if(!chart) { alert('Carga el dashboard primero'); return; }
+    const url = document.getElementById('hourChart').toDataURL('image/png');
+    const a = document.createElement('a'); a.href = url; a.download = 'dashboard.png'; a.click();
+  }
+
+  // --- Inicialización ---
+  function init(){
+    autoClean();
+    actualizarSelects();
+    mostrarTabla();
+    // reloj
+    setInterval(()=>{ document.getElementById('clock').innerText = new Date().toLocaleTimeString(); }, 1000);
+  }
+
+  // Expose marcar for legacy button if used
+  window.marcar = marcar;
+  init();
+</script>
+<!-- PWA enabled -->
+</body>
+</html>
